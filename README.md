@@ -1,47 +1,114 @@
-# Wannabe Google
+# Typeahead System
 
-A highly scalable typeahead search system featuring exact-prefix matching, consistent hashing load balancing, batch-write optimization, and time-decayed trending scores. 
+A full-stack search-suggestion prototype built to explore typeahead system
+design: exact-prefix lookup, consistent-hash cache sharding, batched writes, and
+time-decayed trending scores.
 
-## System Flow
+## Architecture
 
-![Architecture Flow](https://mermaid.ink/img/eyJjb2RlIjogImdyYXBoIExSXG4gICAgQ2xpZW50W1JlYWN0IFVJXSAtLT4gQVBJW0Zhc3RBUEldXG4gICAgQVBJIC0tPiBIYXNoW0NvbnNpc3RlbnQgSGFzaCBSaW5nXVxuICAgIEhhc2ggLS0-IFIxW1JlZGlzIDFdXG4gICAgSGFzaCAtLT4gUjJbUmVkaXMgMl1cbiAgICBIYXNoIC0tPiBSM1tSZWRpcyAzXVxuICAgIEFQSSAtLT58QmF0Y2ggV3JpdGVzfCBEQlsoUG9zdGdyZVNRTCldXG4iLCAibWVybWFpZCI6IHsidGhlbWUiOiAiZGVmYXVsdCJ9fQ==)
-
-## Local Setup Instructions
-
-### 1. Configure Environment Variables
-Before starting the infrastructure or the backend, you must configure your environment variables by copying the example file:
-```bash
-cd Backend
-cp .env.example .env
+```mermaid
+flowchart LR
+    U[React search UI] --> A[FastAPI]
+    A --> H[Consistent hash ring]
+    H --> R1[(Redis 1)]
+    H --> R2[(Redis 2)]
+    H --> R3[(Redis 3)]
+    A --> B[In-memory write buffer]
+    B --> P[(PostgreSQL)]
+    P --> T[Trending recalculation]
+    T --> H
 ```
 
-### 2. Start the Infrastructure
-We use Docker to run the primary PostgreSQL database and 3 distributed Redis nodes.
+## How requests are handled
+
+- `GET /suggest?q=pre` hashes the normalized prefix to one Redis node.
+- A cache miss queries PostgreSQL, ranks up to 50 matches, returns the top 10,
+  and stores them in Redis for one hour.
+- `POST /search?q=query` records the search in an in-memory buffer and updates
+  every prefix asynchronously.
+- Buffered counts flush to PostgreSQL every five seconds or after 100 pending
+  searches.
+- Global trending results are recalculated every 30 seconds with a decaying
+  score based on count and age.
+
+## Stack
+
+| Layer | Technology |
+|---|---|
+| Frontend | React 19 and Vite |
+| API | FastAPI and Uvicorn |
+| Durable store | PostgreSQL with SQLAlchemy async |
+| Cache | Three Redis nodes |
+| Sharding | MD5 consistent-hash ring with virtual nodes |
+
+## Local setup
+
+Requirements: Python 3.10 or newer, Node.js, and Docker.
+
 ```bash
-cd Backend
-docker-compose up -d
+git clone https://github.com/Raghavendra1729-cell/Typeahead-System.git
+cd Typeahead-System/Backend
+docker compose up -d
 ```
 
-### 3. Run the Backend API
+### Current configuration note
+
+This repository is a system-design prototype. Database and Redis connection
+strings are currently defined directly in `Backend/app/core/database.py`, while
+the checked-in Docker Compose file uses a different PostgreSQL username,
+password, and database name. Align those values before starting the API. The
+`.env.example` file documents the intended local endpoints but is not yet read
+by the database module.
+
+Once the connection settings agree:
+
 ```bash
 cd Backend
-python -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt greenlet
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 uvicorn app.main:app --reload
 ```
 
-### 4. Seed the Data (One-time)
-Populate the database with 20,000 queries from the AOL dataset:
+Optionally seed sample query data:
+
 ```bash
-cd Backend
-source venv/bin/activate
-python seed_data.py
+python3 seed_data.py
 ```
 
-### 5. Run the Frontend
+Start the frontend in a second terminal:
+
 ```bash
 cd Frontend
 npm install
 npm run dev
 ```
+
+## API
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/suggest?q=prefix` | Return up to 10 ranked prefix matches |
+| `POST` | `/search?q=query` | Record a search and refresh prefix scores |
+| `GET` | `/trending` | Return the global top 10 |
+| `GET` | `/cache/debug?prefix=x` | Show the Redis node for a prefix |
+
+## Project structure
+
+```text
+.
+├── Backend/
+│   ├── app/api/            # Suggest, search, trending, and debug routes
+│   ├── app/core/           # Database, cache ring, and scoring
+│   ├── app/services/       # Batched persistence and cache updates
+│   ├── docker-compose.yml  # PostgreSQL and three Redis nodes
+│   └── seed_data.py
+└── Frontend/
+    └── src/                # React search interface
+```
+
+## Current scope
+
+The prototype demonstrates the data flow but is not production-ready. It lacks
+authentication, rate limiting, migrations, automated tests, failure recovery,
+and deployable environment-based connection configuration.
